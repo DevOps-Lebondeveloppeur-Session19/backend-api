@@ -55,8 +55,14 @@ jobs:
               # Remove the old container if it exists
               sudo docker rm -f backend-api 
 
-              # Run the new container with environment variables
-              sudo docker run -d --name backend-api -p 3001:3001  --restart always ${{ env.IMAGE_NAME }}
+              sudo docker run -d \
+              -p 3001:3001 \
+              --name backend-api \
+              --network backend-api-net \
+              -e MONGO_URI=mongodb://root:pass-123@mongodb:27017/book-store?authSource=admin \
+              --restart always \
+              ${{ env.IMAGE_NAME }}
+
 
               # Shows running containersss
               sudo docker ps
