@@ -48,7 +48,7 @@ app.get("/test", (req, res) => {
 });
 
 app.get("/hello-test", (req, res) => {
-  res.send("Hello Team - le bon developpeur test  - session 19 🚀");
+  res.send("Hello Team - le bon developpeur test  - session 19 - new update 🚀");
 });
 
 app.get("/auth", (req, res) => {
