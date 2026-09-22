@@ -56,8 +56,8 @@ jobs:
               sudo docker rm -f backend-api 
 
               # Run the new container with environment variables
-              sudo docker run -d --name backend-api -p 3002:80  --restart always ${{ env.IMAGE_NAME }}
+              sudo docker run -d --name backend-api -p 3002:3001  --restart always ${{ env.IMAGE_NAME }}
 
-              # Shows running containers
+              # Shows running containersss
               sudo docker ps
 
