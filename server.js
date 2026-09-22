@@ -47,6 +47,10 @@ app.get("/test", (req, res) => {
   res.send("Hello Team");
 });
 
+app.get("/hello-test", (req, res) => {
+  res.send("Hello Team - le bon developpeur test  - session 19 🚀");
+});
+
 app.get("/auth", (req, res) => {
   res.send("This is a auth endpoint. Authentication logic will be implemented here.");
 });
