@@ -1,0 +1,146 @@
+name: CI/CD backend-api (blue-green)
+
+on:
+  push:
+    branches: [ "main" ]
+
+# Never run two deployments at the same time (they would fight over blue/green)
+concurrency:
+  group: backend-api-deploy
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/backend-api:${{ github.run_number }}
+  APP_DOMAIN: https://api.150.lebondeveloppeur.net
+  HEALTH_PATH: /            # change to /health (or similar) if your API has one
+
+jobs:
+
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t ${{ env.IMAGE_NAME }} .
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Push Docker image
+        run: docker push ${{ env.IMAGE_NAME }}
+
+
+  deploy-job:
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    steps:
+
+      - name: Blue-green deploy on VPS
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USERNAME }}
+          password: ${{ secrets.VPS_PASSWORD }}
+          command_timeout: 10m
+          script: |
+            set -e
+
+            IMAGE="${{ env.IMAGE_NAME }}"
+            HEALTH_PATH="${{ env.HEALTH_PATH }}"
+            NGINX_FILE="/etc/nginx/sites-available/backend-api"
+
+            # ------------------------------------------------------------
+            # 1. Find which color is live (blue = 3001, green = 3002)
+            # ------------------------------------------------------------
+            if grep -q "server 127.0.0.1:3002;" "$NGINX_FILE"; then
+              ACTIVE=green; ACTIVE_PORT=3002
+              TARGET=blue;  TARGET_PORT=3001
+            else
+              ACTIVE=blue;  ACTIVE_PORT=3001
+              TARGET=green; TARGET_PORT=3002
+            fi
+            echo ">>> Live: $ACTIVE ($ACTIVE_PORT)  |  Deploying: $TARGET ($TARGET_PORT)"
+
+            # ------------------------------------------------------------
+            # 2. Start the new version next to the live one
+            # ------------------------------------------------------------
+            sudo docker pull "$IMAGE"
+            sudo docker rm -f "backend-api-$TARGET" 2>/dev/null || true
+
+            sudo docker run -d \
+              --name "backend-api-$TARGET" \
+              --network backend-api-net \
+              -p 127.0.0.1:$TARGET_PORT:3001 \
+              -e MONGO_URI="mongodb://root:pass-123@mongodb:27017/book-store?authSource=admin" \
+              --restart always \
+              "$IMAGE"
+
+            # ------------------------------------------------------------
+            # 3. Health check the new container (60s max)
+            # ------------------------------------------------------------
+            HEALTHY=false
+            for i in $(seq 1 30); do
+              CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$TARGET_PORT$HEALTH_PATH" || true)
+              echo "Health check $i/30 -> HTTP $CODE"
+              if [ "$CODE" -ge 200 ] && [ "$CODE" -lt 500 ]; then
+                HEALTHY=true
+                break
+              fi
+              sleep 2
+            done
+
+            if [ "$HEALTHY" != "true" ]; then
+              echo "!!! $TARGET is unhealthy. Traffic stays on $ACTIVE. Logs:"
+              sudo docker logs --tail 50 "backend-api-$TARGET" || true
+              sudo docker rm -f "backend-api-$TARGET" || true
+              exit 1
+            fi
+
+            # ------------------------------------------------------------
+            # 4. Switch Nginx traffic to the new color
+            # ------------------------------------------------------------
+            sudo cp "$NGINX_FILE" /tmp/backend-api.nginx.bak
+            sudo sed -i "s|server 127\.0\.0\.1:[0-9]\+;|server 127.0.0.1:$TARGET_PORT;|" "$NGINX_FILE"
+
+            if ! grep -q "server 127.0.0.1:$TARGET_PORT;" "$NGINX_FILE" || ! sudo nginx -t; then
+              echo "!!! Nginx switch failed, restoring previous config"
+              sudo cp /tmp/backend-api.nginx.bak "$NGINX_FILE"
+              sudo docker rm -f "backend-api-$TARGET" || true
+              exit 1
+            fi
+
+            sudo systemctl reload nginx
+            echo ">>> Traffic switched to $TARGET ($TARGET_PORT)"
+
+            # ------------------------------------------------------------
+            # 5. Let in-flight requests finish, then stop the old color
+            #    (kept stopped, not deleted, so you can roll back fast)
+            # ------------------------------------------------------------
+            sleep 10
+
+            # Remove the legacy single container from the old pipeline (first run only)
+            sudo docker rm -f backend-api 2>/dev/null || true
+
+            if sudo docker ps -a --format '{{.Names}}' | grep -qx "backend-api-$ACTIVE"; then
+              sudo docker update --restart=no "backend-api-$ACTIVE"
+              sudo docker stop "backend-api-$ACTIVE"
+            fi
+
+            sudo docker image prune -f
+            sudo docker ps
+
+      - name: Verify public endpoint
+        run: |
+          for i in $(seq 1 10); do
+            CODE=$(curl -s -o /dev/null -w "%{http_code}" "${{ env.APP_DOMAIN }}${{ env.HEALTH_PATH }}" || true)
+            echo "Attempt $i -> HTTP $CODE"
+            if [ "$CODE" -ge 200 ] && [ "$CODE" -lt 500 ]; then exit 0; fi
+            sleep 3
+          done
+          echo "Public endpoint check failed"
+          exit 1
