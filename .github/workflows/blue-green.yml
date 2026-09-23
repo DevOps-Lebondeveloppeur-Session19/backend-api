@@ -1,4 +1,4 @@
-name: CI/CD backend-api (blue-green)
+name: CI/CD backend-api (blue-green).
 
 on:
   push:
