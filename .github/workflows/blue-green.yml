@@ -2,7 +2,7 @@ name: CI/CD backend-api (blue-green).
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main-test" ]
 
 # Never run two deployments at the same time (they would fight over blue/green)
 concurrency:
